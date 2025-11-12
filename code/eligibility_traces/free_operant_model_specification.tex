@@ -1,0 +1,93 @@
+
+\documentclass[12pt]{article}
+\usepackage{amsmath}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{setspace}
+\setstretch{1.2}
+\title{A Computational Model of Free Operant Learning}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+This document specifies a bin-based temporal-difference (TD) learning model with Dutch eligibility traces and 
+an average-reward baseline for modeling free operant behavior. The model divides continuous time into small bins 
+(typically 50 ms) and updates value estimates and response tendencies at each bin, enabling learning from delayed 
+and sparse outcomes.
+
+\section{Time Representation}
+Time is partitioned into bins of width $\Delta t$ (e.g., 50 ms). Each bin may contain at most one action. 
+Actions are binary events (press/no press) with possible outcomes (rewards) delivered in the same or later bins.
+
+\section{State and Variables}
+At each bin $b$:
+\begin{itemize}
+\item $Q_b(a)$: Value of action $a \in \{x, y\}$.
+\item $z_b(a)$: Eligibility trace for action $a$.
+\item $r_b$: Reward received in bin $b$ (0 if none).
+\item $\bar{R}_b$: Average-reward baseline.
+\item $\mathbf{x}_b$: One-hot vector of the action emitted in bin $b$ (zeros if none).
+\end{itemize}
+
+\section{Temporal-Difference Learning}
+The model computes per-bin prediction errors and updates action values through decaying traces:
+\begin{align}
+\delta_b &= r_b - \bar{R}_b \\
+\mathbf{z}_{b+1} &= \lambda_{\text{bin}} \mathbf{z}_b + (1 - \alpha \lambda_{\text{bin}} \mathbf{z}_b^\top \mathbf{x}_b)\mathbf{x}_b \\
+\mathbf{Q}_{b+1} &= \mathbf{Q}_b + \alpha \, \delta_b \, \mathbf{z}_b \\
+\bar{R}_{b+1} &= (1 - \eta)\bar{R}_b + \eta \, r_b
+\end{align}
+where $\alpha$ is the learning rate and $\eta$ controls the speed of updating the baseline.
+
+\section{Per-Bin Parameters}
+Continuous-time constants (e.g., eligibility horizon $\tau_e$) are converted to per-bin parameters as:
+\begin{equation}
+\lambda_{\text{bin}} = \exp(-\Delta t / \tau_e)
+\end{equation}
+This ensures invariance to bin size and allows psychological interpretability of $\tau_e$ in seconds.
+
+\section{Action Selection: Whether to Respond}
+The probability of responding follows a logistic hazard model based on time since the last response ($t_{\text{diff}}$)
+and total value ($Q_x + Q_y$):
+\begin{equation}
+\text{logit}(p_{\text{respond}}) = \beta_0 + \beta_t \, t_{\text{diff}} + \beta_q \, (Q_x + Q_y)
+\end{equation}
+Responses are prohibited during a refractory period $\phi$.
+
+\section{Action Selection: Which Action}
+Conditional on responding, the model uses a sticky softmax policy over current action values:
+\begin{align}
+m_b(a) &= \kappa \, Q_b(a) + \omega \, \mathbb{I}[a = a_{\text{last}}] \\
+P(a) &= \frac{\exp(m_b(a))}{\sum_j \exp(m_b(j))}
+\end{align}
+where $\kappa$ controls exploration (inverse temperature) and $\omega$ adds a bias toward repeating the previous action.
+
+\section{Reward Scheduling}
+Rewards are delivered after variable delays (e.g., exponential with mean $\tau_{\text{delay}}$). 
+The credit for rewards is distributed backward in time via decaying eligibility traces, enabling learning across 
+action-outcome delays.
+
+\section{Learning Dynamics}
+Each bin produces a TD error $\delta_b$, which drives updates through traces, allowing credit assignment across 
+delays. The average-reward baseline provides opportunity-cost feedback even in bins without rewards, 
+stabilizing learning in continuous-time tasks.
+
+\section{Summary of Parameters}
+\begin{center}
+\begin{tabular}{ll}
+$\alpha$ & Learning rate for $Q$ updates \\
+$\eta$ & Learning rate for average reward baseline \\
+$\tau_e$ & Eligibility time constant (s) \\
+$\lambda_{\text{bin}}$ & Per-bin eligibility decay ($e^{-\Delta t/\tau_e}$) \\
+$\beta_0, \beta_t, \beta_q$ & Parameters of vigor (whether) function \\
+$\phi$ & Refractory period (s) \\
+$\kappa$ & Inverse temperature for softmax \\
+$\omega$ & Stickiness weight \\
+$\tau_{\text{delay}}$ & Mean delay of reward delivery (s) \\
+\end{tabular}
+\end{center}
+
+\end{document}

@@ -1,0 +1,213 @@
+---
+title: "Free-Operant Temporal-Difference Learning Model"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    code_folding: hide
+    df_print: kable
+    theme: simplex
+    toc: yes
+    toc_depth: 2
+    fig_caption: yes
+    toc_float:
+      collapsed: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 7,
+  fig.height = 9
+)
+library(ggplot2)
+library(patchwork)
+source("eligibility_test.R")
+
+base_args <- list(n_bins = 4000, dt = 0.05)
+scenarios <- get_example_scenarios()
+
+scenario_runs <- lapply(scenarios, function(cfg) {
+  sim_args <- modifyList(base_args, cfg$args)
+  sim <- do.call(simulate_free_operant, sim_args)
+  metrics <- summarize_dynamics(sim)
+  list(config = cfg, sim = sim, metrics = metrics)
+})
+
+summary_df <- do.call(rbind, lapply(scenario_runs, function(run) {
+  data.frame(
+    scenario = run$config$name,
+    description = run$config$desc,
+    responses_per_s = run$metrics["responses_per_s"],
+    choice_x = run$metrics["choice_x"],
+    reward_rate = run$metrics["reward_rate"],
+    avg_delta = run$metrics["avg_delta"],
+    row.names = NULL,
+    check.names = FALSE
+  )
+}))
+```
+
+## Model Overview
+
+The model implements a free-operant reinforcement learning process over fine-grained time bins of width $\Delta t$ (typically 50 ms). Within each bin the agent may emit at most one response. Actions are denoted $a \in \{x, y\}$, and outcomes (rewards) can occur in the same or later bins after a stochastic delay.
+
+### Time and State
+
+Eligibility traces use a Dutch formulation with per-bin decay
+$$\lambda_{\text{bin}} = \exp\left(-\frac{\Delta t}{\tau_e}\right).$$
+State variables per bin $b$ include the action values $Q_b(a)$, Dutch traces $z_b(a)$, the reward $r_b$, the running average reward $\bar{R}_b$, and a one-hot action vector $\mathbf{x}_b$ capturing the response that occurred in the bin (or zeros if no response).
+
+### Learning Updates
+
+Temporal-difference errors and updates follow:
+$$
+\delta_b = r_b - \bar{R}_b,
+$$
+$$
+\mathbf{z}_{b+1} = \lambda_{\text{bin}} \mathbf{z}_b + \left(1 - \alpha \lambda_{\text{bin}} \mathbf{z}_b^\top \mathbf{x}_b\right) \mathbf{x}_b,
+$$
+$$
+\mathbf{Q}_{b+1} = \mathbf{Q}_b + \alpha \, \delta_b \, \mathbf{z}_b,
+$$
+$$
+\bar{R}_{b+1} = (1 - \eta)\bar{R}_b + \eta r_b.
+$$
+Here $\alpha$ is the per-bin learning rate, $\eta$ controls how quickly the average-reward baseline tracks recent outcomes, and $\tau_e$ sets the eligibility horizon in continuous time.
+
+### Action Selection
+
+Whether to respond uses a vigor function over time since the last press ($t_{\text{diff}}$) and total action value:
+$$
+\text{logit}(p_{\text{respond}}) = \beta_0 + \beta_t \, t_{\text{diff}} + \beta_q \, (Q_x + Q_y).
+$$
+Responding is prohibited during a refractory period $\phi$, which is an explicit free parameter (see `refractory_s` in the table below) rather than an emergent quantity of the vigor equation.
+
+Conditional on responding, the agent samples an action from a sticky softmax:
+$$
+m_b(a) = \kappa Q_b(a) + \omega \, \mathbb{I}[a = a_{\text{last}}],
+$$
+$$
+P(a) = \frac{\exp(m_b(a))}{\sum_j \exp(m_b(j))}.
+$$
+The inverse-temperature $\kappa$ tunes explore/exploit balance, while $\omega$ biases the agent toward repeating the previous action.
+
+### Initial comparison of response probability function
+
+In the earlier white paper, I conceived of response probability as an exponential recovery function
+
+$$
+\begin{align}
+  p(\textrm{respond}_{t,b}) &= 1 - \textrm{exp}\left[ - (\nu + \gamma Q^*)(\tau - \textrm{rt}_\textrm{last}) \right] \\[0.3cm]
+  Q^*_{t,b} &= \sum_{a=1}^{2} Q_{t,a,b}
+  \end{align}
+$$
+
+In the current code/parameterization, this has switch to a logit hazard model. I need to think more about this change. But here is an initial AI perspective on it:
+
+The current simulator/Stan code borrowed the logistic hazard because it made earlier vigor parameterizations compatible with existing binary-response datasets.
+
+- Strengths of the logit hazard
+    1. it plugs straight into Bernoulli GLM machinery (easy priors, link inv-logit)
+    2. it naturally accommodates covariates like t_since, Q*, or subject-level random effects
+    3. it combines cleanly with a hard refractory period—simply set the Bernoulli prob to zero during locked-out bins.
+
+- Weaknesses of the logit hazard:
+    1. Lacks the “zero immediately after a response” property unless you manually enforce it (the added refractory flag is a workaround).
+    2. The logit link can predict negative hazards if interpreted continuously; it is fundamentally a discrete-time choice model rather than a renewal process.
+    3. It introduces a separate refractory parameter that partly duplicates what an exponential hazard would already encode.
+
+The exponential recovery form is a continuous-time hazard model derived from a renewal process: the probability grows as $(1 - e^{-(\nu+\gamma Q^*)(\tau - \text{rt}_\text{last})})$.
+
+- Strengths of exponential recovery
+    1. Behaviorally grounded probability is zero at the moment of a response and rises smoothly with elapsed time without needing an explicit refractory flag.
+    2. Multiplicative separation between baseline vigor (ν) and value modulation (γ) matches the intuition that higher total value speeds up recovery.
+    3. Parameters retain interpretable “rate” units and align with the white paper spec.
+
+- Weaknesses of the exponential form:
+    1. Harder to extend with extra predictors (e.g., nuisance regressors) because everything factors into the rate term; heterogeneous effects might require more elaborate hazard parameterizations.
+    2. Constraining ($\nu + \gamma Q^*$) to stay positive demands careful priors or transformations in Stan.
+    3. If responses can occur in discrete bins, the discretized probability is $(1 - e^{-\lambda \Delta_t})$; mapping that to observed Bernoulli data requires consistent bin widths and may be less robust to variable time steps.
+  
+In short, the logistic form was chosen for implementation convenience and flexibility with discrete-time Bernoulli modeling, but if your theoretical commitment is to a recovery process with physically meaningful rates, switching back to the exponential hazard is well motivated. The exponential form will require re-deriving the Bernoulli probability per bin (from the integrated hazard) and enforcing positivity constraints on ν and γ, but it eliminates the ad hoc refractory period and aligns the code with the original white paper.
+
+### Reward Scheduling
+
+Each response can start a reward “job” with action-specific probability $p_{\text{trigger}}(a)$. Rewards are delivered after an exponentially distributed delay with mean $\tau_{\text{delay}}(a)$ and magnitude $R(a)$. Dutch traces distribute credit backward through time, enabling the model to learn despite the delays.
+
+### Parameter Summary
+
+```{r param-table}
+param_table <- data.frame(
+  Parameter = c("alpha", "eta", "tau_e", "beta0_vigor", "beta_t_vigor",
+                "beta_q_vigor", "refractory_s", "kappa", "omega_sticky",
+                "p_trigger", "delay_mean_s", "reward_amount"),
+  Interpretation = c(
+    "Learning rate for action values (per bin)",
+    "Learning rate for the average-reward baseline",
+    "Eligibility time constant (s)",
+    "Baseline logit for responding",
+    "Effect of time since last response on vigor",
+    "Effect of total value (Qx + Qy) on vigor",
+    "Hard refractory period (s)",
+    "Inverse temperature for softmax (explore/exploit)",
+    "Stickiness weight favoring the previous action",
+    "Action-specific probability a response schedules a reward",
+    "Mean delay before reward delivery (s)",
+    "Reward magnitude per action"
+  ),
+  stringsAsFactors = FALSE
+)
+knitr::kable(param_table, caption = "Key model parameters and interpretations.")
+```
+
+## Scenario Overview
+
+The simulator in `eligibility_test.R` defines a set of illustrative scenarios that vary key learning and control parameters. Each scenario is simulated for 4,000 bins (200 s) unless otherwise noted, and the table below summarizes core behavioral metrics.
+
+```{r scenario-summary}
+knitr::kable(
+  summary_df,
+  digits = 3,
+  caption = "Behavioral summary across scenarios (responses per second, action preference, reward rate, and mean TD error)."
+)
+```
+
+## Scenario Walkthrough
+
+The following sections document each scenario in detail, including the motivation, parameter adjustments relative to the defaults, observed metrics, and the full set of diagnostic plots produced by `plot_dynamics()`.
+
+```{r scenario-details, results='asis'}
+format_value <- function(x) paste(x, collapse = ", ")
+
+for (run in scenario_runs) {
+  cfg <- run$config
+  cat("### ", cfg$name, "\n\n", sep = "")
+  cat(cfg$desc, "\n\n")
+  
+  if (length(cfg$args)) {
+    param_df <- data.frame(
+      Parameter = names(cfg$args),
+      Value = vapply(cfg$args, format_value, character(1)),
+      row.names = NULL,
+      check.names = FALSE
+    )
+    knitr::kable(param_df, caption = "Parameter adjustments for this scenario.")
+  } else {
+    cat("_This scenario uses the default parameter settings._\n\n")
+  }
+  
+  metric_df <- data.frame(
+    Metric = names(run$metrics),
+    Value = as.numeric(run$metrics),
+    row.names = NULL,
+    check.names = FALSE
+  )
+  knitr::kable(metric_df, digits = 4, caption = "Observed dynamics from the simulation.")
+  
+  plot_dynamics(run$sim, title = cfg$name, caption = cfg$desc)
+  cat("\n---\n\n")
+}
+```

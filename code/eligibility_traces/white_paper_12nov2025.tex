@@ -1,0 +1,518 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{todonotes}
+\usepackage{geometry}
+\geometry{letterpaper, margin=1in}
+\usepackage{amsmath, amsfonts, amssymb}
+\usepackage{multicol}
+\usepackage{graphicx}
+\usepackage{subfig}
+
+\begin{document}
+\title{White paper: Computational model of free operant learning}
+\author{Michael Hallquist, Zita Oravecz, Alex Dombrovski}
+\date{September 2021}
+\maketitle
+\setlength{\parskip}{0cm}
+\tableofcontents
+\setlength{\parskip}{0.2cm}
+\graphicspath{ {./images/} }
+
+\section{Introduction}
+
+The Social Pavlovian Overshadowing Transfer Task (SPOTT; Hallquist \& Dombrovski) seeks to examine how learned Pavlovian cues exert effects on instrumental values. More specifically, SPOTT follows the general design of classical animal Pavlovian-to-instrumental transfer (PIT) tasks in which there are Pavlovian, instrumental, and PIT phases. In SPOTT, the Pavlovian phase includes both social ('dealers') and nonsocial ('decks') stimuli that are probabilistically paired with rewards (80\%, 60\%, 40\%, 20\%) where dealer and deck pairs serve as compound cues. 
+
+This paper provides an overview of a new computational model of free operant learning developed originally to capture the dynamics of the instrumental phase of SPOTT. The model has broader applicability to free operant tasks and explains matching. As detailed below, the model  learns the values of alternative actions through reinforcement, and scales response vigor based on the total reward rate while allocating responses to cues based on their relative value.
+
+\section{Modeling free operant learning}
+
+Our overall goal is to adapt Q-learning models to free operant tasks in order to capture the dynamics of online learning. The free operant paradigm presents a particular modeling challenge because actions are emitted in real time.  For the same reason, free operant experiments can potentially answer important biological questions. As Niv and colleagues (2007) note, response vigor is an important feature of free operant conditioning that has been previously linked to tonic dopamine. More recent research (reviewed in Berke 2018) suggests that apparent effects of tonic dopamine on motivation and vigor may instead reflect the accumulation of phasic responses (and additional differences in the microcircuitry). Although the tonic vs. phasic debate may be still awaiting resolution, behavioral data provide strong evidence that the average reward rate in the environment has marked effects on the vigor with which an organism acts.  To better understand neural computations reflected in dopamine signals, we need theoretically predicted learning signals from a model that explains the dynamics of vigor, and such a model is currently lacking.
+
+In an environment with a high reward rate, individuals may respond more vigorously due to the opportunity cost of not acting to obtain valuable rewards (Niv 2007). This accords with a normative account of motivation (Niv 2006) in which an agent must select actions based on their expected utilities and also determine how quickly or vigorously to act to maximize utility. On the other hand, the probability of selecting alternative actions often follows a matching law such that response rates are proportionate to corresponding action values (McDowell, 2013). Although theories of matching and motivation have provided descriptive accounts, computational reinforcement learning (RL) models of free operant learning are less developed (cf. Eldar, 2011). 
+
+In addition to the above theoretical objectives, a model that can capture the dynamics of free operant learning can also deepen our understanding of how Pavlovian cues influence vigor during a PIT task.
+
+\section{Partitioning the state space}
+
+In SPOTT, trials are 6s long and participants choose between two actions. Each action is associated with a fixed probability of earning a token, converted to money at the end of the experiment. 
+
+The task has a single press 'timeout' in which one action is active while the other is inactive. Thus, the first time the participant presses a button, it 'activates' this option, and subsequent presses can then harvest rewards. This timeout is intended to prevent constant alternation (akin to playing a trill).  Theoretically, it is based on the concept of 'switch cost' articulated below. The cost need not be solely temporal: we can envision a task version in which one has to work harder (e.g., more presses) to switch buttons before rewards could be obtained.
+
+\begin{figure}[h]
+\caption{Image of instrumental trial in SPOTT}
+\includegraphics[scale=0.5]{instrumental_fig-01}
+\centering
+\end{figure}
+
+Prior to articulating the algorithm that guides free operant behavior, we must first decide how to partition the state space. That is, if we are interested in capturing time-varying dynamics over the course of a trial, how will we integrate the potentially invigorating effects of one outcome on the next? And even more simply, how will we model time?
+
+In her dissertation, Yael Niv takes the parametric approach, treating the challenge of learning the value of various inter-response intervals as a distribution learning problem. Her agent tracks both the expected reward for an action and a corresponding gamma distribution from which the agent selects the response time for the action. Based on action history and reinforcement, the agent updates the moments of the gamma distribution controlling the vigor of responding.  This is an elegant and parsimonious solution.  It encounters, however, challenges of biological plausibility (e.g. what mechanisms govern the selection of a particular basis function and what would be their precision constraints, c.f. Fiorillo 2003, 2008) and generality (boundary conditions under which a different functional form is more advantageous). We are not aware of empirical attempts to validate this model in computational or animal studies.  These considerations suggest that a non-parametric model would be useful and possibly preferable.
+
+To our knowledge, there are not other online learning accounts of free operant tasks, perhaps with the exception of Eldar, Morris, and Niv (2011), which is a quantitative, but not process-level, account of transitions in response rates.  There exists, however, a rich computational literature on temporal difference (TD) learning models that considers how agents track the time between a learned predictive cue (CS) or action and the predicted outcome (US). Without delving into the details of such models (though see Ludvig, Sutton, and Kehoe 2012 for modern extensions), one insight is that it is sometimes useful to consider time in terms of discrete bins (or more generally, temporal receptive elements in modern models). This is related to the complete serial compound (CSC) variant of TD algorithms.
+
+In the free operant context, discretizing time into bins simplifies the problem of how to update value representations. Specifically, we can begin to consider the local 'neighborhood' of time in terms of how many responses are likely to be emitted in each bin. This is somewhat akin to binned analyses of neural spike train data where one can consider a \textit{point process} in which action potentials are binary events distributed unevenly in time. Thus, by binning time, the number of events in each bin can be approximated by a Poisson distribution (see Kass, Emery, and Brown, 2014, Ch. 19).
+
+While we could travel down this path, allowing for multiple events per bin, the problem is simplified further by considering bins that are small enough to contain only a single event. In this case, the point process is approximated by a binary time series in which each bin contains a 1 (event) or 0 (non-event). 
+
+More formally, we can divide a time interval $(0,T]$ into a set of evenly spaced bins. Following Kass (19.1.2), we choose a bin size, $\Delta t = T/n$ and bin thresholds, $t_i = i \cdot \Delta t$, for $i=1,...,n$. Then, each discrete increment, $\Delta N_i = N(t_i) - N(t_{i-1})$, contains the number of events that occurred in that bin. Furthermore, by choosing a small time increment, $\Delta t$, every bin can only contain 0 or 1 event. This means that the counts in each bin, $Y_i = \Delta N_i$ follow a Bernoulli distribution. That is, if $p_i = P(Y_i=1)$, then $Y_i \sim Bernoulli(p_i)$.
+
+Here, we adopt this partition of the state space, dividing six-second trials into 50ms bins. This partition ensures that bins follow a Bernoulli process, allowing for a discrete-time learning model that is charged with predicting the occurrence or non-occurrence of a given action in each time bin. That is, for every subject, the model output is a matrix of binary variables having dimensions $\textrm{trials} \times \textrm{actions} \times \textrm{bins}$.
+
+And conceptually, the predicted occurrence of button presses is a transformation (i.e., observation function) of latent signals that track action values and time-varying reward rate.
+
+\section{Model representation}
+
+\subsection{Model notation}
+
+Here we consider only the simple case of free operant learning with two possible actions, $x$ and $y$. The model could easily be extended to many actions, but some equations would have to be amended. This would also add the complexity of the exposition, so we have foregone this step.
+
+\begin{itemize}
+	\item $a$: the chosen action
+	\item $x$ and $y$: available actions
+    \item $t$: trial
+    \item $b$: time bin within each trial (50ms)
+    \item $Q$: learned expected value of a given action
+    \item $r_{b|a}$: the reinforcement received for the chosen action, $a$ in bin $b$
+    \item $\tau$ is the current moment in time (heuristically, the center of the $b$th bin)
+    \item $\textrm{rt}_\textrm{last}$ is the time (in ms) of the previous response
+    \item $a_\textrm{last}$ is the immediately previous action, regardless of when it occurred (i.e., the last press)
+\end{itemize}
+
+\subsection{Learning rule: 50ms time bin approach}
+
+Moving onto the mechanics of the model, the vector of value representations $\mathbf{Q}$ is updated following TD($\lambda$) within each time bin, $b$ of a trial, $t$.
+
+\begin{equation}
+\mathbf{Q}_{t,b+1} = 
+	  \mathbf{Q}_{t,b} + \alpha \mathbf{z}_{t,b} (r_{b} - \mathbf{Q}_{t,b}) 
+\end{equation}
+
+The dutch eligibility trace $\mathbf{z}$ is a vector controlling the assignment of prediction errors to actions and $\mathbf{x}$ is the vector of actions taken in bin $b$:
+\begin{equation}
+\mathbf{z}_{t,b+1} = 
+	  \lambda \mathbf{z}_{t,b} + (1 - \alpha \lambda \mathbf{z}^\intercal _{t,b}\mathbf{x}_{t,b})\mathbf{x}_{t,b}
+\end{equation}
+The learning rate, $\alpha$ controls the sensitivity of the value representation to recent versus remote experience. 
+
+[REVISE]Note that if $y$ is chosen instead, the value representation of $x$ is carried forward to the next time bin unchanged (as opposed to some sort of reciprocal update). Likewise, if no action is emitted in a time bin, the representation carries forward. Finally, for the time being, action values are carried forward from one trial to the next. That is, the Q values for the last bin of trial $t$ are carried over to the first bin of $t+1$. We could amend the model to allow for decay or prior reversion between trials, but we would need a motivating example to support this amendment.
+
+\subsubsection{TD error opportunity cost account}
+
+\begin{align}
+Q_{t+1} &= Q_t + \alpha\delta_t \\
+\delta_t &= r_t - \bar{R}_t + Q_{s,t+1} - Q_{s,t} \\
+\delta_t &= r_t - \bar{R}_t - Q_{s,t} \\
+\bar{R}_{t+1} &= (1 - \eta)\bar{R}_t + \eta r_t
+\end{align}
+
+The second version of the delta doesn't have a prediction error based on the comparison of the anticipated value of the subsequent state. This is an important part of Q-learning that pertains to the idea of Q-learning being 'off policy' -- that is, not knowing what the agent will do next (based on its policy), but only assuming that the agent will do the best thing. (Difference between Q-learning and SARSA.)
+
+As a result, a few tentative conclusions:
+
+1. The R-bar term should be updated on every timestep, regardless of whether an action was taken. This changes the Q representation into the units of relative value of a reward compared to the average reward.
+
+2. The prediction errors need to be delivered specifically to the chosen actions, rather than just the state. Need to sort out some of the details here for appropriate back-propagation to ensure proper credit assignment.
+
+3. The $\tau$ term from Niv is only needed if we adopt a continuous action space where latency is a component of the choice. In a binned representation, it is probably sufficient to have an ARL-type approach where the agent tracks the average reward rate.
+
+\subsection{Choice rule}
+
+With sufficiently fine time bin resolution (e.g., 50ms), by design, an agent cannot respond fast enough to achieve multiple presses per bin. Likewise, this representation will yield many bins with no response. Consequently, an online learning algorithm must address two components of choice: 1) \textit{whether} to respond, and 2) \textit{which} action to choose. This is related to the Niv 2007 distinctions of "how fast?" and "which action?"
+
+Furthermore, the choice of \textit{whether} relates to motivational vigor, independent of action, whereas \textit{which} relates to how the agent determines the best action to choose. Likewise, the \textit{which} choice relates to the exploration-exploitation dilemma where the agent has the option of switching actions or continuing with the current action. This also relates to the consideration of \textit{unit cost} and \textit{vigor cost} in Niv 2007. A unit cost refers to the reduction in utility due to the work required to obtain the action-outcome pairing. In Niv's example, this is the idea of the fixed metabolic/effort cost of moving from the lever to the magazine to harvest a food pellet. In addition, expected utility may decrease due to a vigor cost in which emitting the same action at a faster rate is more costly.
+
+Altogether, these considerations yield a two-part choice rule that separates the \textit{whether} and \textit{which} components. Consistent with a vigor-based account, the prediction of whether the agent will respond in a time bin depends on the \textit{total} (i.e., summed) expected utility of acting within the environment. By contrast, the choice of which action to emit depends on the \textit{relative} values. 
+
+This choice rule can be considered in terms of the joint probability of responding (at all) and the probability of choosing a given action:
+
+\begin{align}
+    p(x) &= p(x) * p(\textrm{respond}) \\
+    p(y) &= p(y) * p(\textrm{respond}) \\
+    p(null) &= 1 - p(\textrm{respond})
+\end{align}
+
+\subsubsection{Choice rule: probability of responding (2022)}
+
+In additional simulations (see recover\_nu\_gamma.R) looking at parameter dynamics under the old 2PL version of the choice rule (see below), Michael noted that the predicted probabilities were indistinguishable at different combinations of $\nu$ and $\gamma$. This is in part due to the symmetry of the logistic function, which leads to more of a funneling pattern in the probabilities, rather than single convex surface. This is an identifiability nightmare. Moreover, it is a conceptual problem, where higher value ($Q^*$) yields a sharp decision boundary (due to acting as a slope), but does not necessarily increase the probability of responding, which is a function of the time elapsed and $\nu$ basal vigor.
+
+Instead, we want to think of responding as an exponential recovery process where the time between responses reflects both individual differences in basal vigor and the value of options (and thus, the opportunity cost of sloth). In this view, a single exponential recovery function is more intuitive and also has far better/near perfect identifiability in simple simulations.
+
+Here's the idea:
+
+\begin{align}
+p(\textrm{respond}_{t,b}) &= 1 - \textrm{exp}\left[ - (\nu + \gamma Q^*)(\tau - \textrm{rt}_\textrm{last}) \right] \\[0.3cm]
+Q^*_{t,b} &= \sum_{a=1}^{2} Q_{t,a,b}
+\end{align}
+
+This builds on the basic intuition of exponential decay/recovery (e.g., in radioactive isotopes)
+
+\begin{align}
+p(\textrm{event}) &= 1 - \textrm{exp}\left[ - \lambda t \right] \\[0.3cm]
+\end{align}
+
+Here, the 'tdiff' ($\tau - \textrm{rt}_\textrm{last}$) is the 't' in the recovery expression (representing change over time), and our 'regression equation' of sorts controls the rate of recovery, $\lambda$. This is related to the idea of 'multiple process' decay in physics, where the total decay is the addition of the separate processes. Here, one process ($\nu$) is the baseline recovery speed when $Q^*$ is 0 (like an intercept). The other process ($\gamma Q^*$) is the incremental decrease in recovery time due to vigor sensitivity and environment value.
+
+Note that both recovery parameters must be positive, and Q* must be, too.
+
+
+\subsubsection{Choice rule: probability of responding (2021 and before -- flawed)}
+
+\begin{align}
+p(\textrm{respond}_{t,b}) &= \frac{\phi_{t,b}}{1 + \textrm{exp}\left[ -\gamma(Q^*_{t,b} + \nu) \right]} \\[0.3cm]
+\phi_{t,b} &= 1 - \textrm{exp}\left[ -(\tau - \textrm{rt}_\textrm{last})/\beta \right] \\[0.3cm]
+Q^*_{t,b} &= \sum_{a=1}^{2} Q_{t,a,b}
+\end{align}
+
+\paragraph{Definitions:}
+\begin{itemize}
+    \item $\gamma$ is vigor sensitivity: the steepness of the response curve as total value increases
+    \item $\nu$ is basal vigor: controls the point at which the probability of response = 0.5
+    \item $\phi_{tb}$ is the maximum probability of a response given the time since the previous response (motor speed)
+    \item $\beta$ is the recovery rate for responding due to motor refractory period
+    \item $Q^*_{tb}$ is the total reward available in the environment, which drives vigor
+\end{itemize}
+
+$\phi$ is an exponential decay function that scales individual differences in the refractory period between consecutive responses according to the time elapsed between the previous response $\textrm{rt}_\textrm{last}$ and the current moment in time $\tau$ (both in milliseconds here). The $\beta$ parameter changes the rate of recovery, with larger values being associated with a slower recovery between consecutive responses. Thus, $\phi$ sets the upper asymptote on the probability of a response due to motor constraints, irrespective of value. As more time elapses, $\phi$ approaches one, reverting the equation to a traditional sigmoid function.
+
+In addition to motor constraints, the $Q^*$ term captures the perceived summed subjective value of all actions in the environment at a given moment in time. This aligns with Niv, where higher total values (i.e., rich environments) should be associated with greater vigor.
+
+Note that this function is a variant of a two-parameter logistic (2PL) model in item response theory, where $\gamma$ would be called \textit{discrimination} and $\nu$ would be the (negative) \textit{difficulty}. Here, the 2PL is extended by the motor speed function, $\phi$, described above.
+
+\paragraph{Model nomenclature:}
+
+\begin{itemize}
+    \item value2pl: The 2-parameter logistic (2PL) model above in which $\beta$, $\gamma$, and $\nu$ are all free parameters.
+    \item nonu: The 2PL function above with $\nu$ = 0 -- removing basal vigor
+    \item fixbeta: The 2PL function above with $\beta$ = 1 -- removing beta as a free scaling parameter on recovery, but allowing the numerator to lower response probability due to recent previous response.
+    \item nobeta: The 2PL function above with $\beta$ = 1e-10. This effectively yields 1.0 numerator in all cases, taking this dynamic out of the model. Alternatively, the numerator could just be coded as 1.0, but with additional coding time costs.
+    \item nogamma: The 2PL function above with $\gamma$ = 1 -- removing vigor sensitivity as a free parameter
+\end{itemize}
+
+\subsubsection{Choice rule: Sticky softmax for predicting \textit{what} to choose}
+
+We have adapted the sticky softmax of Lau \& Glimcher, which models the influence of relative value on choice, as well as the stickiness of choices due not due to value (what they call 'choice sensitivity').
+
+Here, we conceptualize the stickiness in terms of the perceived/experienced cost of switching actions in the free operant context, perhaps due to the effort involved moving between actions (e.g., if the mouse has to cross the cage to reach the other lever). Another view is that switching actions may involve an opportunity cost (wasted time).
+
+We start from a vector of Q values across all actions $a$, at the current trial $t$ and time bin $b$:
+
+\begin{equation}
+    Q_{t,.,b} = \{ Q_{t,1,b}, Q_{t,2,b}, ..., Q_{t,a,b} \}
+\end{equation}
+
+The influence of relative value on choice is scaled by an inverse temperature parameter $kappa$ that controls the balance of exploitative versus stochastic choices. Higher values of $\kappa$ lead to more exploitative choices, while lower values yield more stochastic choices.
+
+The tendency to repeat the last action, regardless of its value, is scaled by an 'choice sensitivity' parameter $\omega$ that multiplies whether the current choice is the same as the previous choice (i.e., an indicator function), $u$, which has a value of 1 if the current action matches the previous and 0 if it does not:
+
+\begin{equation}
+u_{t,b+1}(a) = \begin{cases} 
+      1 & a_{t,b} = a_\textrm{last} \\
+      0 & \textrm{otherwise}
+   \end{cases}
+\end{equation}
+
+These influences are combined into a weighted sum that is entered into the standard softmax choice rule.
+
+\begin{equation}
+m_{t,b}(a) = \kappa Q_{t,a,b} + \omega u_{t,a,b}
+\end{equation}
+
+\begin{equation}
+p(c_{t,b} = a) = \frac{\exp{[m_{t,b}(a)]}}{\sum_{j}{\exp{[m_{t,b}(j)]}}}
+\end{equation}
+
+\subsection{Feb 26 models}
+
+\subsubsection{No time model}
+What if we set aside the problem of time elapsed for a moment and revert to a much simpler 2PL approach where the probability of responding is determined by the summed value in the environment. The $\gamma$ and $\nu$ parameters still capture individual differences in value sensitivity and basal vigor, respectively.
+
+\subsubsection{Integrating value and time}
+Conceptually, we need the probability of responding to be a joint function of summed value and elapsed time. As more time elapses, the probability of responding increases even when value is low (the cost of sloth). As summed value increases, responding should also be more likely even if one responded recently.
+
+The fundamental shift here is to re-express the notion of ability (in an IRT sense) in terms of time, not value. With time elapsed as ability, then $\nu$ shifts the curve left or right along the time axis, setting how much time must elapse for a person to have a p = 0.5 response probability (when tdiff + $\nu$ is 0). Higher values of $\nu$ will shift the probability toward 1.0, while lower values (including negative values) will shift the probability toward zero.
+
+Then, value controls the steepness of the curve such that higher value is associated with more rapid increases in response probability.
+
+First step
+
+Allow value to serve as the slope that scales the response probability as a function of time elapsed.
+
+\begin{align}
+p(\textrm{respond}_{t,b}) &= \frac{1}{1 + \textrm{exp}\left[ -Q^*_{t,b}(\textrm{tdiff} + \nu) \right]} \\
+\textrm{tdiff} &= \tau - \textrm{rt}_\textrm{last}
+\end{align}
+
+\paragraph{time2pl}
+
+Taking a step further:
+
+\begin{align}
+p(\textrm{respond}_{t,b}) &= \frac{1}{1 + \textrm{exp}\left[ -Q^*_{t,b} \gamma (\textrm{tdiff} + \nu) \right]} 
+\end{align}
+
+Here, $\gamma$ still scales the slope of the response function such that higher values lead to more sensitivity to value, but it allows the slope not to be in the arbitrary units of $Q^*$.
+
+This is called the 'time2pl' model in VBA and simulation code.
+
+\section{2025 attempt at eligibility traces and average reward rate baseline}
+
+\subsection{Overview}
+This version extends 4.2.1 above (TD opportunity cost) and specifies a bin-based temporal-difference (TD) learning model
+with Dutch eligibility traces and an average-reward baseline for modeling free operant behavior. Note that equation 1 in 4.2.1 was not using an ARL-like encoding of value for Q, but instead trying to track some scalar value estimate (e.g., probability of reward for the actions).
+
+As above, we segment continuous time into small bins (50 ms) and update value estimates and response tendencies at each bin.
+
+The state space partition remains as above, and the choice rule equations (whether/which) are also essentially the same, with the caveat that
+Q values are now computed as below.
+
+\subsection{Time Representation}
+Time is partitioned into bins of width $\Delta t$ (e.g., 50 ms). Each bin may contain at most one action. 
+Actions are binary events (press/no press) with possible outcomes (rewards) delivered in the same or later bins.
+
+The model includes an eligibility time constant $\tau_e$ that captures the duration (in seconds) over which an action remains eligible to receive credit for subsequent rewards, producing exponential decay of the eligibility trace and thus defining the temporal window of learning. I think this would be a free parameter in fitting... but I haven't thought through identifiability yet. If action-reward delays are constant (like action leads to reward 500ms later), I imagine this parameter could be finicky.
+
+\subsection{State and Variables}
+At each bin $b$:
+\begin{itemize}
+\item $Q_b(a)$: Value of action $a \in \{a_1, a_2, ..., a_n\}$ in this bin.
+\item $z_b(a)$: Eligibility trace for action $a$.
+\item $r_b$: Reward received in bin $b$ (0 if none).
+\item $\bar{R}_b$: Average-reward baseline, capturing the moving reward rate. This also yields opportunity cost dynamics
+\item $\mathbf{x}_b$: One-hot vector of the action emitted in bin $b$ (zeros if none). Has the same length as the set of actions.
+\end{itemize}
+
+\subsection{TD Learning Equations}
+The model computes per-bin prediction errors and updates action values through decaying traces:
+\begin{align}
+\delta_b &= r_b - \bar{R}_b \\
+\mathbf{z}_{b+1} &= \lambda_{\text{bin}} \mathbf{z}_b + (1 - \alpha \lambda_{\text{bin}} \mathbf{z}_b^\top \mathbf{x}_b)\mathbf{x}_b \\
+\mathbf{Q}_{b+1} &= \mathbf{Q}_b + \alpha \, \delta_b \, \mathbf{z}_b \\
+\bar{R}_{b+1} &= (1 - \eta)\bar{R}_b + \eta \, r_b
+\end{align}
+where $\alpha$ is the learning rate and $\eta$ controls the speed of updating the baseline. The $\delta_b$ represents the TD error in an average-reward learning context. Only bins with a response increment the trace (of the relevant action via $\mathbf{x_b}$). Bins without responses lead to decay of each action's eligibility.
+
+Relative to the simpler instantaneous Q models we've used in analyses and simulations, the Q values here are 1) computed relative to the average reward rate (differential form) and 2) incorporate eligibility.
+
+The $\bar{R}$ is updated gradually by a free parameter $\eta$ that must be less than $\alpha$. It is updated in each bin regardless of whether an action occurred.
+
+\subsection{Per-Bin Decay}
+The continuous-time eligibility horizon $\tau_e$ needs to be scaled to the bin size to get the eligibility units correct:
+\begin{equation}
+\lambda_{\text{bin}} = \exp(-\Delta t / \tau_e)
+\end{equation}
+This ensures invariance to bin size and allows psychological interpretability of $\tau_e$ in seconds. Note that $\lambda_{\textrm{bin}}$ is just a constant that pertains to all bins -- hence it it not indexed by $b$.
+
+
+\section{Historical archives}
+
+Here are notes from many of the early iterations of the model. They are recorded for background information and context, but are not currently being used.
+
+\subsection{Choice rule}
+
+\subsubsection{Choice rule: probability of switching actions}
+
+Given the binary parameterization used throughout, we have parameterized the choice of \textit{which} action to choose in terms of the probability of switching actions. This simplifies the maths a bit and also highlights the effect of switch costs. Rather than consider the possibility that every action has an independent cost associated with it (as in Niv 2007), here we consider only that switching to the other action has a fixed cost, $c$.
+
+\emph{Note:} This is the updated version of this equation from October 2018. Rather than putting the switch cost into the softmax function, which leads to parameter competition between temperature ($\kappa$) and cost ($c$), this subtracts a unit switch cost in probability units. Thus, $c$ is the reduction in probability of switching independent of relative value (i.e., comparison of Q values) and choice stochasticity/exploration (i.e., temperature).
+
+\begin{equation}
+p(\textrm{switch}_{tb}) = \frac{1}{1 + \textrm{exp}[-\kappa(Q_{\textrm{unchosen}} - Q_{\textrm{chosen}})]} - c
+\end{equation}
+
+Here, the $\kappa$ parameter is a softmax function temperature that controls choice stochasticity -- also conceptualized as the rate of exploration. Lower $\kappa$ values are associated with more switches, whereas higher values lead the agent to prefer to stay with high-value actions. \textit{Note}: Because we subtract a [0, 1] distributed $c$ from the probability of switching, $p(\textrm{switch})$ must be bounded on [0, 1] in the case where the subtraction would lead to impossible probabilities (e.g., -.1).
+
+\subsubsection{Sticky softmax choice rule background}
+
+Lau \& Glimcher 2005 extend a softmax choice rule to include two solution of entering in two contributors to the softmax. In their case, they compute the probability of each action as:
+
+\begin{equation}
+p(c_{tb} = c) = \frac{\exp{[m_{tb}(c)]}}{\sum_{j}{\exp{[m_{tb}(j)]}}}
+\end{equation}
+
+The variate entering the softmax has two components, one reflecting the influence of action value, and one reflecting choice stickiness (i.e., choice autocorrelation independent of value). The second component could also be reconceptualized in terms of perceived cost of switching.
+
+\begin{equation}
+m_t(c) = \beta v_{tb}(c) + \omega u_{tb}(c)
+\end{equation}
+
+In this equation, $\beta$ and $\omega$ serve as separable inverse temperature parameters that scale the influence of value and stickiness on choice. Christakou et al., 2013 call $\beta$ "outcome sensitivity" and $\omega$ "choice sensitivity." Value ($v_{tb}$) can be updated in the usual way (delta rule above). The choice stickiness function maps whether the current action (on $tb$) is the same as the preceding action:
+
+\begin{equation}
+u_{t,b+1}(c) = \begin{cases} 
+      1 & c_t = c \\
+      0 & \textrm{otherwise}
+   \end{cases}
+\end{equation}
+
+If we extend this to our context, then essentially a higher $\omega$ in their framework would promote stickiness, which would relate to switch cost in our conceptualization. In the Christakou paper, they set a Gamma prior on the $\beta$ distribution and a Normal prior on $\omega$: 
+
+\begin{equation}
+\beta \sim Gamma(2,1)
+\end{equation}
+
+\begin{equation}
+\omega \sim N(0,1)
+\end{equation}
+
+By treating $\omega$ as zero-centered, negative values would promote switching and positive values would promote staying. Using a Gamma distribution for $\beta$ ensures that value cannot have a perversely negative influence on choice.
+
+For us, we'd need to switch things up a bit. We currently have a $curkey$ variable denoting which key was last pressed/chosen. We'd probably want to recode this into two variables: $x_{chosen}$ and $y_{chosen}$, which would be 0/1 and only one of them could be a 1 (i.e., mutually exclusive). In this setup, the 0/1 variable can be entered into the softmax for each choice option.
+
+For example, the probability of choosing $x$ is:
+
+\begin{equation}
+p(c_{tb} = x) = \frac{\exp{[m_{tb}(x)]}}{\exp{[m_{tb}(x)]} + \exp{[m_{tb}(y)]}}
+\end{equation}
+
+\subsubsection{Computing model-predicted action probabilities}
+
+Putting the two parts of the choice rule together, the probability of emitting each action in a given time bin is the product of the probability of making any response (\textit{whether}) with the probability of choosing a specific action based on its relative value (\textit{which}), as well as choice stochasticity and switch cost.
+
+\begin{align}
+p(x_b) &= p(\textrm{switch} | \textrm{unchosen} = x ) * p(\textrm{respond}) \\
+p(y_b) &= (1 - p(\textrm{switch} | \textrm{unchosen} = x )) * p(\textrm{respond})
+\end{align}
+
+If the subtraction of $c$ as a fixed probability does not work well in identifiability tests, we could turn to the Lau \& Glimcher 2005 solution of entering in two contributors to the softmax. In their case, they compute the probability of each action as:
+
+
+\subsubsection{Problems with identifiability of $\nu$ and $\beta$}
+
+Aug 2019: In parameter recovery simulations, we noticed that there is both between-person correlations of $r ~0.5$ between $\nu$ and $\beta$, and that the estimated posterior correlation at subject level approached $r = 1$. The latter is especially problematic for interpretation.
+
+On further reflection, the limit of p(respond) as $\beta$ goes to infinity is zero. Conversely, the limit of p(respond) as $\nu$ goes to infinity is one. That is, higher betas go with more sloth (slower recovery), whereas higher nus go with more vigorous responding in the relative absence of value/reinforcement.
+
+Thus, this sets up a parameter race situation where higher $\nu$ values (higher vigor/responding) can be offset entirely by higher $\beta$ values (slowing down responding). Moreover, we may need to give up on the conceptual idea of compartmentalizing a motor speed-only source of responding from a motivated compartment of responding. In truth, there is probably no such thing as a 'basal motor speed' in the absence of any motivational component.
+
+Altogether, the model is conceptually cleaner if we preserve $\beta$ but nix $\nu$. We just need to allow for $\beta$ to be (conceptually) a mixture of 'pure' motor speed with a motivated 'basal vigor.'
+
+
+\subsubsection{Further problems with identifiability}
+
+Even with $\nu$ removed from the model, we get competition between $\beta$ and $\gamma$. There is some kind of nonlinear relationship between them (since it's a fraction of exponentials), but nevertheless, they don't get along. What we need is a combined term that considers basal vigor not in terms of motor speed recovery, but as a term that captures willingness to overcome sloth/boost vigor.
+
+Something like:
+
+\begin{equation}
+p(\textrm{respond}_{t,b}) = \frac{1}{1 + \textrm{exp}\left[ -\gamma(Q^*_{t,b} + \nu^\zeta) \right]}
+\end{equation}
+
+\begin{equation}
+\zeta = \frac{1}{1+\exp(-\beta(\tau - rt_{last}))} 
+\end{equation}
+
+where $\beta$ is a scaling term to handle motor speed differences. Perhaps $\beta$ could be fixed at 1.0 or fixed to a single value across subjects. But we may run into a race condition again between $\beta$ and $\nu$.
+
+
+So, maybe something simpler like in the OU process model?
+
+
+\begin{equation}
+p(\textrm{respond}_{t,b}) = \frac{1}{1 + \textrm{exp}\left[ -\gamma(Q^*_{t,b}^\zeta) \right]}
+\end{equation}
+
+OU process (mean reversion)
+
+\begin{equation}
+m_i = \mu + \exp[-\beta t_{diff}](Y_{i-1} - \mu)
+\end{equation}
+
+In our case, we could think of $\mu$ as a basal response rate (if transformed into probability). Then we need time passage to push the function toward 1.0, not 0, as in OU.
+
+
+How about simplifying all of the competition between $\gamma$ and $\nu$ by constraining the slope using the time difference. The challenge of exponentiating the total value is that gamma and zeta are likely to compete -- larger gammas are partly offset by smaller zetas, and vice versa. That is, the slope scales the influence of total value on choice, so we could constrain the multiplier by allowing a free parameter (for individual differences in vigor) while also reducing the likelihood of super-fast responding. In this view, $\gamma$ should be large when the time elapsed is long -- driving the function toward 1.0 (i.e., respond). The challenge is that if we drop $\nu$, then when $Q^*$ is 0, the function is constrained to be 1.0 -- no coefficient can change 0! So, we really need to keep $\nu$ in some form to allow the function to go below 1 when $Q^*$ is 0.
+
+How about we re-express $\gamma$ as a function of the time elapsed and the motor recovery speed.
+
+\begin{align}
+    p(\textrm{respond}_{t,b}) &= \frac{1}{1 + \textrm{exp}\left[ -\gamma(Q^*_{t,b} + \nu) \right]} \\
+    \gamma &= (\tau - \textrm{rt}_\textrm{last}) / \beta
+\end{align}
+
+So, as the last RT was further and further in the past, $\gamma$ goes up, which drives the exponentiated expression toward zero, leading the fraction toward 1.0.
+
+The challenge here is that the scaling of gamma becomes really strange since it will always be positive, which means that the basal vigor is crucial for maintaining the possibility of a positive exponentiated term (i.e., to support ps $<$ .5).
+
+What about using motor speed as a discount factor or gate on gamma?
+
+\begin{align}
+    p(\textrm{respond}_{t,b}) &= \frac{1}{1 + \textrm{exp}\left[ -\gamma \phi(Q^*_{t,b} + \nu) \right]} \\
+    \phi &= 1 - \exp[-(\tau - \textrm{rt}_\textrm{last}) / \beta]
+\end{align}
+
+In this approach, $\phi$ takes the same 0--1 range as our original response function, thereby gating the influence of $\gamma$ on a given trial. Might this lead to a renewed competition between $\gamma$ and $\beta$? I suspect it will be less of a problem given that both are influencing the same exponentiated expression. And this parameterization is more intuitive than some of the alternatives above.
+
+
+
+\section{Performance in simulations}
+
+These simulations are based on the v1.0 model that has the following parameterization:
+
+\begin{align}
+p(\textrm{respond}_{t,b}) &= \frac{\phi_{t,b}}{1 + \textrm{exp}\left[ -\gamma(Q^*_{t,b} + \nu) \right]} \\[0.3cm]
+\phi_{t,b} &= 1 - \textrm{exp}\left[ -(\tau - \textrm{rt}_\textrm{last})/\beta \right] \\[0.3cm]
+Q^*_{t,b} &= \sum_{a=1}^{2} Q_{t,a,b}
+\end{align}
+
+\begin{equation}
+p(\textrm{which} = c)_{tb} = \frac{\exp[m_{tb}(c)]} {\sum_{a}{\exp[m_{tb}(a)]}}    
+\end{equation}
+
+\begin{equation}
+m_{tb}(c) = \kappa Q_{tb}(c) + \omega u_{tb}(c)    
+\end{equation}
+
+\begin{equation}
+u_{tb}(c) = \begin{cases}
+1 & \textrm{if} \enspace c_{tb} = c \\
+0 & \textrm{otherwise}
+\end{cases}
+\end{equation}
+
+To understand the model's performance in computational experiments, we focused on two-choice Gaussian random walk (GRW) contingencies in which the action probabilities were initialized at $p = 0.5$, then varied by trial with a step size (SD) of $0.8$. We set reflecting boundaries on the contingency such that $0.2 < p  <0.8$. This approach has substantial advantages for disambiguating the effects of summed versus relative value because across replications, random walks should cover all possible combinations. That is, with sufficient replications, we should obtain results that span the low-to-high total value dimension, as well as the low-to-high relative value difference dimension. Note that reward probabilities were constant within a trial (i.e., no variation across time bins).
+
+Here is a prototypical contingency from this structure:
+
+\begin{figure}[h]
+\includegraphics[scale=0.6]{grwalk_example.pdf}
+\centering
+\end{figure}
+
+\subsection{Response vigor depends on total, not relative, value}
+
+First, we simulated data for 100 different contingencies and examined the relationship between response vigor, operationalized as number of button presses within a trial, and total learned value of all actions in the trial. If summed, but not relative value, controls the rate of responding, we would predict 1) the number of button presses should be linearly related to total value ($Q^*$), and 2) the contribution of each action's specific value to the response rate should be equal.
+
+We also wanted to verify that choice stochasticity (i.e., the $\kappa$ temperature) did not alter the vigor-summed value relationship.
+
+As illustrated in Figure 2, across simulated datasets, we corroborated our primary hypotheses and also verified that this result did not depend on $\kappa$.
+
+\begin{figure}%
+    \centering
+    \subfloat{{\includegraphics[scale=0.5]{vigor_value_scatter.pdf} }}%
+    \qquad
+    \subfloat{{\includegraphics[scale=0.5]{vigor_value_by_kappa.pdf} }}%
+    \caption{Effect of total value on response vigor. The left panel depicts the correlation between number of actions on a trial and the total learned value of actions within the same trial. The right panel depicts the standardized regression coefficients in which the total number of presses was regressed on the specific action values. Note that the contribution of specific values to total responses was equal across replications and kappa values.}%
+    \label{fig:vigor_value}%
+\end{figure}
+
+\subsection{Response ratios scale with reward probability ratios}
+
+Next, we set out to examine whether the model captures a fundamental aspect of matching theory. Specifically, we sought to test whether the log ratio of choices for action $x$ versus action $y$ scaled linearly with the log ratio of their reward probabilities. This probability matching has been described in an array of previous studies (see McDowell, 2013 for a review), but an online learning account of this phenomenon has not, to our knowledge, been articulated.
+
+Using the same GRW simulation approach as above, we calculated the log ratio of the responses for each action on every trial. We then correlated these with the corresponding log ratio of reward probabilities. As illustrated below, there was a strong log-linear relationship between these ratios, consistent with the matching rule. 
+However, probability matching is likely a better description of behavior late in learning, after the agent has shifted more toward exploitation. Moreover, if an agent has high stochasticity (random exploration), this may degrade the tendency to match probabilities.
+
+Consistent with this account, we found that the log-linearity of response ratios and reward probabilities depended strongly on the temperature parameter, $\kappa$, which controls the tendency to explore versus exploit. As illustrated in Figure 3, at higher $\kappa$ values, reflecting greater exploitation of high values, the matching rule was strongly supported, whereas at lower values, this relationship was degraded.
+
+\begin{figure}%
+    \centering
+    \subfloat{{\includegraphics[scale=0.4]{log_lin_explore_exploit.pdf} }}%
+    \qquad
+    \subfloat{{\includegraphics[scale=0.4]{log_matching_scatter.pdf} }}%
+    \caption{The log-linear relationship between response ratios and reward probabilities depends on the explore/exploit tradeoff}%
+    \label{fig:matching_rule}%
+\end{figure}
+
+
+\end{document}
+
