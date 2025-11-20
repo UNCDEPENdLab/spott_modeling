@@ -96,10 +96,30 @@ run_ratio_driver <- function(ratio = c(10),
     cat("Now generating data...\n")
     if (exists("GenerateData")) {
       results[[i]] <- GenerateData(
-        V, r_avg, rho, k_v, Utility_i, 1 / ratio[i], times, p_r,
-        p_non, p_bsr, EatTime, Nactions, local_Nstates, dt, Temp,
-        Beta, Ndata, Nsessions, max_actions, Softmax, figures,
-        Reward_times, schedule, schedule_type
+        V = V,
+        r_avg = r_avg,
+        rho = rho,
+        k_v = k_v,
+        Utility = Utility_i,
+        bait_rate = 1 / ratio[i],
+        times = times,
+        p_r = p_r,
+        p_non = p_non,
+        p_bsr = p_bsr,
+        EatTime = EatTime,
+        Nactions = Nactions,
+        Nstates = local_Nstates,
+        dt = dt,
+        Temp = Temp,
+        Beta = Beta,
+        Ndata = Ndata,
+        Nsessions = Nsessions,
+        max_actions = max_actions,
+        Softmax = Softmax,
+        figures = figures,
+        Reward_times = Reward_times,
+        schedule = schedule,
+        schedule_type = schedule_type
       )
     } else {
       warning("GenerateData function is not available; skipping simulation.")

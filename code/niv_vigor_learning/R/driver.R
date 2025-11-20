@@ -23,6 +23,7 @@ run_driver <- function(V = NULL, r_avg = 0) {
   Temp <- 0.1
   Softmax <- 1
   figures <- 1
+  max_actions <- 500
 
   schedule_type <- "Variable"
   schedule <- "Interval"
@@ -119,10 +120,28 @@ run_driver <- function(V = NULL, r_avg = 0) {
     cat("Now generating data...\n")
     if (exists("GenerateData")) {
       GenerateData(
-        V, r_avg, rho, k_v, Utility, 1 / interval[i], times, p_r,
-        EatTime, Nactions, Nstates, dt, Temp, Beta,
-        Ndata, Nsessions, Softmax, figures, Reward_times,
-        schedule, schedule_type
+        V = V,
+        r_avg = r_avg,
+        rho = rho,
+        k_v = k_v,
+        Utility = Utility,
+        bait_rate = 1 / interval[i],
+        times = times,
+        p_r = p_r,
+        EatTime = EatTime,
+        Nactions = Nactions,
+        Nstates = Nstates,
+        dt = dt,
+        Temp = Temp,
+        Beta = Beta,
+        Ndata = Ndata,
+        Nsessions = Nsessions,
+        max_actions = max_actions,
+        Softmax = Softmax,
+        figures = figures,
+        Reward_times = Reward_times,
+        schedule = schedule,
+        schedule_type = schedule_type
       )
     } else {
       warning("GenerateData function is not available; skipping simulation.")

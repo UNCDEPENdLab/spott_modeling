@@ -106,10 +106,30 @@ run_interval_driver <- function(Utility = c(60),
 
     if (exists("GenerateData")) {
       summaries[[i]] <- GenerateData(
-        V, r_avg, rho, k_v, Utility[i], 1 / interval,
-        times, p_r, p_non, p_bsr, EatTime, Nactions, Nstates,
-        dt, Temp, Beta, Ndata, Nsessions, max_actions,
-        Softmax, figures, Reward_times, schedule, schedule_type
+        V = V,
+        r_avg = r_avg,
+        rho = rho,
+        k_v = k_v,
+        Utility = Utility[i],
+        bait_rate = 1 / interval,
+        times = times,
+        p_r = p_r,
+        p_non = p_non,
+        p_bsr = p_bsr,
+        EatTime = EatTime,
+        Nactions = Nactions,
+        Nstates = Nstates,
+        dt = dt,
+        Temp = Temp,
+        Beta = Beta,
+        Ndata = Ndata,
+        Nsessions = Nsessions,
+        max_actions = max_actions,
+        Softmax = Softmax,
+        figures = figures,
+        Reward_times = Reward_times,
+        schedule = schedule,
+        schedule_type = schedule_type
       )
     } else {
       warning("GenerateData function is not available; skipping simulation.")
