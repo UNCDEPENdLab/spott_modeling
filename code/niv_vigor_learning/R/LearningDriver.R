@@ -658,9 +658,279 @@ run_learning_driver <- function(
   R_log <- R_log[seq_len(Nresponses)]
   EatTimes <- EatTimes[seq_len(Nresponses)]
   EatTrials <- EatTrials[seq_len(Nresponses)]
+  if (is.matrix(LogV)) {
+    LogV <- LogV[, seq_len(Nresponses), drop = FALSE]
+  } else {
+    LogV <- LogV[seq_len(Nresponses)]
+  }
 
   if (figures) {
-    message("Plotting not implemented in the R port; export the logged data to plot externally.")
+    default_par <- graphics::par(no.readonly = TRUE)
+    on.exit(graphics::par(default_par), add = TRUE)
+    plot_colors <- rep("gray40", Nactions)
+    if (Nactions >= 1) plot_colors[1] <- "blue"
+    if (Nactions >= 2) plot_colors[Nactions] <- "red"
+    if (Nactions >= 3) plot_colors[Nactions - 1] <- "darkgreen"
+
+    reset_par <- function() {
+      graphics::par(default_par)
+    }
+
+    # ---- Figure 1: Response rates over time ----
+    valid_rates <- c(LPs, NPs, if (!is.null(Others)) Others else numeric(0))
+    if (length(bin_centers) && any(is.finite(valid_rates))) {
+      y_range <- range(valid_rates[is.finite(valid_rates)])
+      x_range <- if (diff(range(bin_centers)) == 0) {
+        rep(bin_centers[1], 2) + c(-1, 1)
+      } else {
+        range(bin_centers)
+      }
+      if (diff(y_range) == 0) {
+        y_range <- y_range + c(-0.5, 0.5)
+      }
+      reset_par()
+      plot(x_range, y_range, type = "n",
+           xlab = "time (sec) after reward",
+           ylab = "response rate per min in 2nd half of training",
+           main = sprintf("R_avg = %s, <Trial length> = %3.2f sec",
+                          if (exists("R")) sprintf("%3.2f", R) else "NA",
+                          Reward_summary[1]))
+      if (length(LPs)) {
+        graphics::lines(bin_centers[seq_along(LPs)], LPs,
+                        col = plot_colors[1], lwd = 2, pch = 8, type = "o")
+      }
+      if (length(NPs)) {
+        graphics::lines(bin_centers[seq_along(NPs)], NPs,
+                        col = plot_colors[Nactions], lwd = 2, lty = 2, pch = 8, type = "o")
+      }
+      if (!is.null(Others) && length(Others)) {
+        idx <- seq_along(Others)
+        graphics::lines(bin_centers[idx], Others,
+                        col = plot_colors[max(1, Nactions - 1)], lwd = 2, pch = 16, type = "o")
+      }
+      legend_labels <- c("LP", "NP")
+      legend_cols <- c(plot_colors[1], plot_colors[Nactions])
+      if (!is.null(Others) && length(Others)) {
+        legend_labels <- c("LP", "NP", "Other")
+        legend_cols <- c(plot_colors[1], plot_colors[Nactions], plot_colors[max(1, Nactions - 1)])
+      }
+      graphics::legend("topright", legend = legend_labels,
+                       col = legend_cols, lwd = 2, pch = c(8, 8, 16)[seq_along(legend_labels)], bty = "n")
+    } else {
+      message("Not enough actions in the back half of training to plot response rates.")
+    }
+
+    # ---- Figure 2: Policy/Q visualization ----
+    if (tolower(LearnMode) == "directactor" && exists("Alpha") && exists("V")) {
+      states_to_plot <- integer(0)
+      if (tolower(schedule) == "interval") {
+        states_to_plot <- c(Sindex[1, 1, 1], Sindex[1, 1, 2])
+      } else if (tolower(schedule_type) == "fixed") {
+        idx_seq <- if (dim(Sindex)[1] >= 2) as.integer(Sindex[2:dim(Sindex)[1], 1, 1]) else integer(0)
+        states_to_plot <- c(Sindex[1, min(2, Nactions), 1], idx_seq, Sindex[1, 1, 2])
+      } else {
+        states_to_plot <- seq_len(Nstates)
+      }
+      states_to_plot <- unique(states_to_plot[!is.na(states_to_plot)])
+      if (length(states_to_plot)) {
+        n_panels <- if (length(states_to_plot) < 5) c(length(states_to_plot), 1) else c(ceiling(length(states_to_plot) / 3), 3)
+        reset_par()
+        graphics::par(mfrow = n_panels)
+        for (s in states_to_plot) {
+          idx_info <- which(Sindex == s, arr.ind = TRUE)
+          if (!nrow(idx_info)) next
+          idx <- idx_info[1, ]
+          Atilda <- Btilda <- rep(NA_real_, Nactions)
+          Mtilda <- rep(1 / Nactions, Nactions)
+          if (constrained) {
+            Atilda <- Alpha[, s]
+            Btilda <- Beta[, s]
+            if (exists("M")) {
+              Mtilda <- M[, s]
+            } else if (exists("Q")) {
+              Mtilda <- Q[, s]
+            }
+            Mtilda <- Mtilda / sum(Mtilda)
+          } else {
+            Atilda <- exp(Alpha[, s]) + minA
+            Btilda <- exp(Beta[, s]) + minB
+            if (includeR) {
+              Btilda <- Btilda / sqrt(max(R, .Machine$double.eps))
+            }
+            if (Mlearning && exists("M")) {
+              pref <- exp(M[, s] - max(M[, s]))
+              Mtilda <- pref / sum(pref)
+            } else if (exists("Q")) {
+              Mtilda <- Q[, states_to_plot[1]]
+            }
+          }
+          densities <- sapply(seq_len(Nactions), function(i) {
+            stats::dgamma(times, shape = Atilda[i], scale = Btilda[i])
+          })
+          densities <- sweep(densities, 2, Mtilda, `*`)
+          ylim <- range(densities, finite = TRUE)
+          if (!all(is.finite(ylim))) {
+            ylim <- c(0, 1)
+          }
+          plot(times, densities[, 1], type = "l", col = plot_colors[1], lwd = 2,
+               ylim = ylim, xlab = "Time", ylab = "Probability density")
+          if (Nactions > 1) {
+            graphics::lines(times, densities[, Nactions], col = plot_colors[Nactions], lwd = 2)
+          }
+          if (Nactions > 2) {
+            graphics::lines(times, densities[, Nactions - 1], col = plot_colors[Nactions - 1], lwd = 2)
+          }
+          if (Nactions > 2) {
+            legend_idx <- c(1, Nactions, Nactions - 1)
+            legend_labels <- c("LP", "NP", "Other")
+          } else {
+            legend_idx <- c(1, Nactions)
+            legend_labels <- c("LP", "NP")
+          }
+          graphics::legend("topright", legend = legend_labels,
+                           col = plot_colors[legend_idx], lwd = 2, bty = "n")
+          title(sprintf("Policy for (t_s=%d,a_prev=%d,i_r=%d), V=%.4f",
+                        idx[1], idx[2], idx[3], V[s]))
+        }
+        reset_par()
+      }
+    } else if (exists("Q")) {
+      q_states <- list(
+        list(idx = c(1, 1, 1), title = "Q values after an unrewarded LP"),
+        list(idx = c(1, 1, 2), title = "Q values after a rewarded LP")
+      )
+      if (tolower(schedule) == "ratio") {
+        q_states <- c(q_states, list(list(idx = c(1, min(2, dim(Sindex)[2]), 1),
+                                          title = "Q values after a NP")))
+      }
+      q_states <- Filter(function(x) {
+        idx <- x$idx
+        idx[1] <- min(idx[1], dim(Sindex)[1])
+        idx[2] <- min(idx[2], dim(Sindex)[2])
+        !is.na(Sindex[idx[1], idx[2], idx[3]])
+      }, q_states)
+      if (length(q_states)) {
+        reset_par()
+        graphics::par(mfrow = c(length(q_states), 1))
+        for (qs in q_states) {
+          idx <- qs$idx
+          idx[1] <- min(idx[1], dim(Sindex)[1])
+          s <- Sindex[idx[1], idx[2], idx[3]]
+          q_mat <- Q[, , s]
+          ylim <- range(q_mat, finite = TRUE)
+          if (!all(is.finite(ylim))) ylim <- c(0, 1)
+          plot(times, q_mat[, 1], type = "l", col = plot_colors[1], lwd = 2,
+               ylim = ylim, xlab = "Time", ylab = "Q value", main = qs$title)
+          for (a in seq_len(Nactions)[-1]) {
+            graphics::lines(times, q_mat[, a], col = plot_colors[a], lwd = 2)
+          }
+          q_vec <- as.numeric(q_mat)
+          q_soft <- exp((q_vec - max(q_vec)) / Temp)
+          q_soft <- matrix(q_soft / sum(q_soft), nrow = Ntimes, ncol = Nactions)
+          scale_factor <- 5 * diff(ylim)
+          if (!is.finite(scale_factor) || scale_factor == 0) scale_factor <- 1
+          for (a in seq_len(Nactions)) {
+            graphics::lines(times, scale_factor * q_soft[, a] + ylim[1],
+                            col = plot_colors[a], lwd = 1, lty = 2)
+          }
+          graphics::legend("topright", legend = Actions,
+                           col = plot_colors[seq_along(Actions)], lwd = 2, bty = "n")
+        }
+        reset_par()
+      }
+    }
+
+    if (learn) {
+      # ---- Figure 3: Average reward ----
+      if (length(R_log)) {
+        reset_par()
+        plot(seq_along(R_log), R_log, type = "l", lwd = 2, col = "blue",
+             xlab = "actions", ylab = "estimated average reward",
+             main = "Average reward estimates over actions")
+        graphics::abline(h = Rmin, lty = 3)
+      }
+
+      # ---- Figure 4: Prediction errors at reward ----
+      y_reward <- Deltas[EatTrials > 0]
+      y_reward <- c(y_reward, 0)
+      cut_len <- floor(length(y_reward) / 100) * 100
+      if (cut_len >= 100) {
+        y_reward <- y_reward[seq_len(cut_len)]
+        rolling <- colMeans(matrix(y_reward, nrow = 100))
+        reset_par()
+        plot(seq_len(cut_len), y_reward, type = "l", col = "blue", lwd = 1.5,
+             xlab = "actions", ylab = "prediction error",
+             main = "Prediction errors at reward delivery")
+        graphics::lines(seq(51, cut_len, by = 100), rolling, col = "red", lwd = 2)
+        graphics::abline(h = 0, lty = 2)
+      }
+
+      # ---- Figure 5: Prediction errors between rewards ----
+      if (Nresponses > Nhalfway) {
+        idx <- Nhalfway + which(EatTrials[(Nhalfway + 1):Nresponses] == 0)
+        y_between <- c(Deltas[idx], 0)
+        cut_len <- floor(length(y_between) / 100) * 100
+        if (cut_len >= 100) {
+          y_between <- tail(y_between, cut_len)
+          rolling <- colMeans(matrix(y_between, nrow = 100))
+          reset_par()
+          plot(seq_len(cut_len), y_between, type = "l", col = "blue", lwd = 1.5,
+               xlab = "actions", ylab = "prediction error",
+               main = "Prediction errors between rewards (2nd half)")
+          graphics::lines(seq(51, cut_len, by = 100), rolling, col = "red", lwd = 2)
+          graphics::abline(h = 0, lty = 2)
+        }
+      }
+
+      # ---- Figure 6: Policy parameter trajectories ----
+      if (tolower(LearnMode) == "directactor" && !is.null(LogAlpha)) {
+        idx_slog <- which(Responses == 1 & LogS == Slog)
+        if (length(idx_slog) > 1) {
+          if (constrained) {
+            alpha_vals <- LogAlpha[idx_slog]
+            beta_vals <- LogBeta[idx_slog]
+            mix_vals <- LogM[, idx_slog, drop = FALSE]
+          } else {
+            alpha_vals <- exp(LogAlpha[idx_slog]) + minA
+            beta_vals <- exp(LogBeta[idx_slog]) + minB
+            if (includeR) {
+              beta_vals <- beta_vals / sqrt(pmax(R_log[idx_slog], .Machine$double.eps))
+            }
+            mix_vals <- if (Mlearning) exp(LogM[, idx_slog, drop = FALSE]) else LogM[, idx_slog, drop = FALSE]
+          }
+          layout_matrix <- matrix(c(1, 2, 3, 1, 4, 5), nrow = 2, byrow = TRUE)
+          reset_par()
+          graphics::layout(layout_matrix)
+          plot(alpha_vals, beta_vals, type = "l", col = "darkgreen", lwd = 1.5,
+               xlab = "Alpha(LP,1)", ylab = "Beta(LP,1)")
+          points(alpha_vals[1], beta_vals[1], col = "red", pch = 8)
+          plot(beta_vals, type = "l", col = "black",
+               main = "Beta(LP,1) over the trials", xlab = "trials", ylab = "Beta")
+          plot(alpha_vals, type = "l", col = "black",
+               main = "Alpha(LP,1) over the trials", xlab = "trials", ylab = "Alpha")
+          mix_idx <- if (Nactions > 2) c(1, Nactions - 1, Nactions) else c(1, Nactions)
+          matplot(t(mix_vals[mix_idx, , drop = FALSE]), type = "l", lwd = 1.5, lty = 1,
+                  main = if (Mlearning) "M(:,1) over the trials" else "Q(:,1) over the trials",
+                  xlab = "trials", ylab = "value",
+                  col = plot_colors[mix_idx])
+          graphics::legend("topright",
+                           legend = Actions[mix_idx],
+                           col = plot_colors[mix_idx], lwd = 1, bty = "n")
+          if (is.matrix(LogV) && ncol(LogV)) {
+            matplot(t(LogV), type = "l", lwd = 1.5,
+                    main = "V over the trials", xlab = "actions", ylab = "Value")
+          } else if (!is.matrix(LogV) && length(LogV)) {
+            plot(LogV, type = "l", lwd = 1.5,
+                 main = "V over the trials", xlab = "actions", ylab = "Value")
+          } else {
+            plot.new()
+            title("V over the trials")
+            text(0.5, 0.5, "No V logs recorded")
+          }
+          reset_par()
+        }
+      }
+    }
   }
 
   list(
